@@ -1,0 +1,10 @@
+{
+  "name": "safety-net",
+  "version": "1.2.0",
+  "description": "Before a destructive shell command runs (rm -rf, git reset --hard, git clean, force push, DROP TABLE...), shows exactly what it would destroy and asks; Cancel is the default",
+  "author": {
+    "name": "Gonzalo"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/itsGonzalits/claude-mods"
+}

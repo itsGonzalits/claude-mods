@@ -1,0 +1,10 @@
+{
+  "name": "reflect",
+  "version": "1.1.0",
+  "description": "When you correct Claude, offers to save the fix as a lasting rule in this project's CLAUDE.md or your global one",
+  "author": {
+    "name": "Gonzalo"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/itsGonzalits/claude-mods"
+}

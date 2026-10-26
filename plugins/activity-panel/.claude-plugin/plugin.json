@@ -1,0 +1,10 @@
+{
+  "name": "activity-panel",
+  "version": "1.2.0",
+  "description": "Task progress above the prompt while Claude works, and an /activity pane with tasks, subagents, files and tools for this chat",
+  "author": {
+    "name": "Gonzalo"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/itsGonzalits/claude-mods"
+}

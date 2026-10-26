@@ -1,0 +1,29 @@
+{
+  "name": "session-meter",
+  "version": "1.1.0",
+  "description": "Cache countdown in the status line, a guard before a cold re-read of a big chat, /keepwarm, and /handoff to a fresh chat",
+  "author": {
+    "name": "Gonzalo"
+  },
+  "userConfig": {
+    "cache_ttl": {
+      "type": "string",
+      "title": "Cache lifetime",
+      "description": "auto: 1 hour on a Claude subscription, 5 minutes on an API key",
+      "options": [
+        "auto",
+        "1h",
+        "5m"
+      ],
+      "default": "auto"
+    },
+    "handoff_at": {
+      "type": "number",
+      "title": "Offer a handoff at (tokens)",
+      "description": "Context size at which the band offers a fresh chat",
+      "default": 250000
+    }
+  },
+  "license": "MIT",
+  "repository": "https://github.com/itsGonzalits/claude-mods"
+}
