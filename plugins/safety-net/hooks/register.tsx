@@ -5,7 +5,7 @@
 import type { Register, EngineInterface } from 'claude-code'
 
 type Hit =
-  | { kind: 'delete'; label: string; targets: string[]; base: string }
+  | { kind: 'delete'; label: string; targets: string[]; base: string; vars: Record<string, string> }
   | { kind: 'git'; label: string; argv: string[]; base: string }
   | { kind: 'sql'; label: string; statement: string }
 
@@ -33,20 +33,34 @@ function resolve(base: string, p: string, home: string) {
   return parts.join('/') || '/'
 }
 
+// A variable set to a fresh mktemp folder: deleting it later loses nothing.
+const FRESH_TMP = '\u0000fresh-tmp'
+const unquote = (v: string) => v.trim().replace(/^"(.*)"$|^'(.*)'$/s, (_, a, b) => a ?? b)
+function assignment(seg: string): [string, string] | null {
+  const m = /^(?:export\s+|local\s+)?([A-Za-z_]\w*)=(.*)$/s.exec(seg) ?? /^\$([A-Za-z_]\w*)\s*=\s*(.+)$/s.exec(seg)
+  if (!m) return null
+  const value = unquote(m[2] ?? '')
+  return [m[1]!, /^(\$\(|`)\s*mktemp\b|New-TemporaryFile|GetTempFileName/i.test(value) ? FRESH_TMP : value]
+}
+
 function detect(command: string, cwd: string, home: string): Hit[] {
   const hits: Hit[] = []
+  const vars: Record<string, string> = {}
   let base = cwd
   for (const seg of command.split(/&&|\|\||;|\n/)) {
+    const set = assignment(seg.trim())
+    if (set) { vars[set[0]] = set[1]; continue }
     const t = tokens(seg.trim()).filter(x => x !== 'sudo')
     const [cmd = '', ...rest] = t
     const c = cmd.toLowerCase()
     const flags = rest.filter(isFlag).join(' ')
     const args = rest.filter(x => !isFlag(x))
+    const del = (targets: string[]) => hits.push({ kind: 'delete', label: seg.trim(), targets, base, vars: { ...vars } })
     if (c === 'cd' && args[0]) base = resolve(base, args[0], home)
-    else if (c === 'rm' && /(^|\s)-(\w*[rR]\w*|-recursive)\b/.test(flags)) hits.push({ kind: 'delete', label: seg.trim(), targets: args, base })
-    else if (/^(remove-item|ri)$/.test(c) && /-recurse/i.test(flags)) hits.push({ kind: 'delete', label: seg.trim(), targets: args.filter(a => !/^-/.test(a)), base })
-    else if (/^(rd|rmdir|del|erase)$/.test(c) && /\/s\b/i.test(flags)) hits.push({ kind: 'delete', label: seg.trim(), targets: args, base })
-    else if (c === 'find' && /\s-delete\b|-exec\s+rm\b/.test(seg)) hits.push({ kind: 'delete', label: seg.trim(), targets: args.slice(0, 1), base })
+    else if (c === 'rm' && /(^|\s)-(\w*[rR]\w*|-recursive)\b/.test(flags)) del(args)
+    else if (/^(remove-item|ri)$/.test(c) && /-recurse/i.test(flags)) del(args.filter(a => !/^-/.test(a)))
+    else if (/^(rd|rmdir|del|erase)$/.test(c) && /\/s\b/i.test(flags)) del(args)
+    else if (c === 'find' && /\s-delete\b|-exec\s+rm\b/.test(seg)) del(args.slice(0, 1))
     else if (c === 'git') {
       const sub = args[0] ?? ''
       const all = rest.join(' ')
@@ -106,8 +120,35 @@ async function walk($: EngineInterface, path: string, acc: Acc) {
 const size = (b: number) => (b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b > 1e3 ? `${Math.round(b / 1e3)} KB` : `${b} B`)
 const shortPath = (p: string, base: string) => (p.startsWith(base.replace(/\\/g, '/') + '/') ? p.slice(base.length + 1) : p)
 
+// The path variables a delete commonly names, read once (env names must be literals).
+type Env = Record<string, string>
+async function pathEnv($: EngineInterface): Promise<Env> {
+  const got: [string, string | undefined][] = [
+    ['HOME', await $.env.get('HOME')], ['USERPROFILE', await $.env.get('USERPROFILE')],
+    ['TEMP', await $.env.get('TEMP')], ['TMP', await $.env.get('TMP')], ['TMPDIR', await $.env.get('TMPDIR')],
+    ['APPDATA', await $.env.get('APPDATA')], ['LOCALAPPDATA', await $.env.get('LOCALAPPDATA')],
+  ]
+  const env: Env = {}
+  for (const [k, v] of got) if (v) env[k] = v.replace(/\\/g, '/')
+  return env
+}
+
+// Fills in $VAR, ${VAR}, $env:VAR and %VAR% from earlier assignments in the same command,
+// then the environment. Unknown ones stay as they are, so the caller can still say so.
+function expand(s: string, vars: Record<string, string>, env: Env, depth = 0): string {
+  let out = s.replace(/\$\{(\w+)\}|\$env:(\w+)|\$(\w+)|%(\w+)%/gi, (all, a, b, c, d) => {
+    const name: string = a ?? b ?? c ?? d
+    const local = vars[name]
+    if (local !== undefined) return depth < 4 ? expand(local, vars, env, depth + 1) : local
+    return env[name] ?? env[name.toUpperCase()] ?? all
+  }).replace(/\\/g, '/')
+  // Git Bash's /tmp is the Windows temp folder.
+  if (depth === 0 && /^\/tmp(\/|$)/.test(out) && env.TEMP && /^[a-z]:/i.test(env.TEMP)) out = env.TEMP + out.slice(4)
+  return out
+}
+
 // Returns what would be lost, or null when nothing would be.
-async function measure($: EngineInterface, hit: Hit, home: string, since: number): Promise<string | null> {
+async function measure($: EngineInterface, hit: Hit, home: string, since: number, env: Env): Promise<string | null> {
   if (hit.kind === 'sql') return `Runs ${hit.statement}: the data cannot be recovered from here.`
   if (hit.kind === 'git') {
     const r = await $.process.run(hit.argv, { cwd: winPath(hit.base), timeoutMs: 8000 })
@@ -119,11 +160,16 @@ async function measure($: EngineInterface, hit: Hit, home: string, since: number
     const list = lines.slice(0, SHOW).map(l => `  ${l.replace(/^Would remove /, '')}`)
     return [`${hit.label}: ${lines.length} ${what}`, ...list, ...(lines.length > SHOW ? [`  …and ${lines.length - SHOW} more`] : [])].join('\n')
   }
-  const dynamic = hit.targets.filter(x => /[$`%]/.test(x))
+  const targets: string[] = []
+  for (const raw of hit.targets) {
+    const x = expand(raw, hit.vars, env)
+    if (!x.includes(FRESH_TMP)) targets.push(x)
+  }
+  const dynamic = targets.filter(x => /[$`%]/.test(x))
   if (dynamic.length) return `${hit.label}: deletes ${dynamic.join(', ')}, which is only known when the command runs; could not measure it.`
   const acc: Acc = { files: 0, bytes: 0, old: 0, sample: [], capped: false, since }
   let guarded = ''
-  for (const target of hit.targets) {
+  for (const target of targets) {
     const full = resolve(hit.base, target, home)
     if (isProtected(full, home)) guarded = full
     const slash = full.lastIndexOf('/')
@@ -149,8 +195,10 @@ async function measure($: EngineInterface, hit: Hit, home: string, since: number
 
 export const register: Register = on => {
   let home = ''
+  let env: Env = {}
   on('session.start', async ($, e, next) => {
-    home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/\\/g, '/')
+    env = await pathEnv($).catch(() => ({}))
+    home = env.USERPROFILE ?? env.HOME ?? ''
     return next(e)
   })
 
@@ -168,7 +216,7 @@ export const register: Register = on => {
     const found: string[] = []
     const since = await $.session.usage().then(u => u.startedAt, () => Infinity) // unknown: treat every file as old
     for (const hit of hits) {
-      const m = await measure($, hit, home, since).catch(() => `${hit.label}: could not measure what it would remove.`)
+      const m = await measure($, hit, home, since, env).catch(() => `${hit.label}: could not measure what it would remove.`)
       if (m) found.push(m)
     }
     if (!found.length) return next(e) // nothing there to lose

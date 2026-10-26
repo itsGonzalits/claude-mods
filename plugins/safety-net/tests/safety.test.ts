@@ -46,9 +46,15 @@ test('destructive commands are held with what they would destroy; harmless ones 
   await $.tool.call({ tool: 'Bash', command: 'rm -rf "$OUT_DIR"' })
   expect(asked[2]).toMatch(/could not measure/)
 
+  // Variables set earlier in the same command are filled in; a fresh mktemp folder passes.
+  await $.tool.call({ tool: 'Bash', command: 'D=$(mktemp -d) && touch "$D/x" && rm -rf "$D"' })
+  expect(asked.length).toBe(3)
+  await $.tool.call({ tool: 'Bash', command: 'D=sub/docs; rm -rf "$D"' })
+  expect(asked[3]).toMatch(/deletes 2 files \(52 KB\)/)
+
   answer = 'Run it'
   await $.tool.call({ tool: 'Bash', command: 'cd sub && rm -rf docs' })
-  expect(ran).toBe(3)
+  expect(ran).toBe(4)
 })
 
 test('scratch files made this session and build output go without asking', async ($, on) => {
