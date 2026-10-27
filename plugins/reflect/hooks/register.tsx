@@ -28,13 +28,15 @@ const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 const fileFor = (scope: Draft['scope']) => (scope === 'project' ? `${s.cwd}/CLAUDE.md` : `${s.home}/.claude/CLAUDE.md`)
 const label = (scope: Draft['scope']) => (scope === 'project' ? 'project CLAUDE.md' : 'global CLAUDE.md')
 
-function prompt(message: string, reply: string) {
+function prompt(message: string, reply: string, existing: string) {
   return `A person wrote this to an AI coding assistant:
 <message>${message}</message>
 The assistant's previous reply, for context:
 <reply>${reply}</reply>
+The instructions the assistant already follows (its CLAUDE.md files):
+<existing>${existing || '(none)'}</existing>
 
-Does the message state a lasting rule or preference the assistant should follow in future sessions? Corrections like "no, always use pnpm here" or "never use em dashes" count. A one-off instruction about the current task does not.
+Does the message state a lasting rule or preference the assistant should follow in future sessions? Corrections like "no, always use pnpm here" or "never use em dashes" count. A one-off instruction about the current task does not. If the existing instructions already say the same thing, even in different words, it does not count either.
 
 Answer with JSON only, no prose:
 {"rule": "<one imperative sentence under 20 words, generalised beyond this task>", "scope": "project" | "global"}
@@ -46,7 +48,14 @@ async function check($: EngineInterface, text: string, mine: number) {
   if (!looksLikeCorrection(text)) return
   const messages = await $.session.messages()
   const reply = [...messages].reverse().find(m => m.role === 'assistant')?.text ?? ''
-  const r = await $.model.complete({ model: 'haiku', prompt: prompt(text, reply.slice(-800)), maxTokens: 150, timeoutMs: 20_000 })
+  // Both CLAUDE.md files go to the model, so a rule already there in other words is skipped.
+  const files: string[] = []
+  for (const sc of ['project', 'global'] as const) {
+    const path = fileFor(sc)
+    if (await $.fs.exists(path)) files.push(String(await $.fs.read(path)))
+  }
+  const existing = files.map(f => f.trim().slice(-4000)).filter(Boolean).join('\n\n---\n\n')
+  const r = await $.model.complete({ model: 'haiku', prompt: prompt(text, reply.slice(-800), existing), maxTokens: 150, timeoutMs: 20_000 })
   if (!r.isAnswered || mine !== s.gen) return
   const json = /\{[\s\S]*\}/.exec(r.text)?.[0]
   if (!json) return
@@ -54,11 +63,8 @@ async function check($: EngineInterface, text: string, mine: number) {
   const rule = parsed.rule?.trim()
   if (!rule) return
   const scope: Draft['scope'] = parsed.scope === 'project' ? 'project' : 'global'
-  // Already a rule in either file? Then say nothing.
-  for (const sc of ['project', 'global'] as const) {
-    const path = fileFor(sc)
-    if ((await $.fs.exists(path)) && norm(String(await $.fs.read(path))).includes(norm(rule))) return
-  }
+  // Exact repeat the model missed? Then say nothing.
+  if (files.some(f => norm(f).includes(norm(rule)))) return
   s.draft = { rule, scope }
   s.editing = false
   $.ui.invalidate('ui.render')
