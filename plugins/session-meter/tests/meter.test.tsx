@@ -23,13 +23,6 @@ function world(on: On, tokens: number) {
     return <Box />
   })
 }
-function answer(on: On, label: string, asked: string[]) {
-  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
-    const q = (e as unknown as { questions: { question: string }[] }).questions[0]!.question
-    asked.push(q)
-    return { result: { questions: [], answers: { [q]: label } } } as never
-  })
-}
 const done = { answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as const
 
 test('a long chat offers a handoff, which writes the brief and shows it ready', async ($, on) => {
@@ -51,24 +44,4 @@ test('a long chat offers a handoff, which writes the brief and shows it ready', 
   expect(await ui.find({ type: 'Text', text: /Handoff ready/ })).toBeDefined()
   expect(writes[0]).toMatch(/^\/proj\/\.claude\/handoffs\/.*-ship-mods\.md$/)
   await ui.unmount()
-})
-
-test('a cold cache holds the next message once and can cancel it', async ($, on) => {
-  world(on, 120_000)
-  const clock = mock.clock(on, { now: 1_000_000 })
-  const asked: string[] = []
-  answer(on, 'Cancel', asked)
-  on('prompt.fill', () => ({ isFilled: true }) as never)
-  on('prompt.submit', (_, e) => ({ text: e.text }))
-  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  await $.turn.complete(done)
-
-  await clock.advance(30 * 60_000)
-  const warm = await $.prompt.submit({ text: 'still warm', wait: false, origin: { kind: 'composer' } })
-  expect('drop' in warm).toBe(false)
-
-  await clock.advance(2 * 60 * 60_000)
-  const cold = await $.prompt.submit({ text: 'hello again', wait: false, origin: { kind: 'composer' } })
-  expect(asked.join(' ')).toMatch(/re-reads 120k tokens/)
-  expect('drop' in cold).toBe(true)
 })

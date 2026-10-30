@@ -3,7 +3,7 @@
   "owner": { "name": "Gonzalo", "url": "https://github.com/itsGonzalits" },
   "metadata": { "description": "Four small Claude Code mods: session health, activity, rules from corrections and a destructive-command safety net" },
   "plugins": [
-    { "name": "session-meter", "source": "./plugins/session-meter", "description": "Cache countdown, cold-send guard and /handoff" },
+    { "name": "session-meter", "source": "./plugins/session-meter", "description": "Cache countdown and /handoff" },
     { "name": "activity-panel", "source": "./plugins/activity-panel", "description": "Task progress above the prompt and an /activity pane" },
     { "name": "reflect", "source": "./plugins/reflect", "description": "Turns your corrections into saved CLAUDE.md rules" },
     { "name": "safety-net", "source": "./plugins/safety-net", "description": "Shows what a destructive command would destroy and asks first" }

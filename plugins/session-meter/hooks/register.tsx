@@ -1,13 +1,11 @@
 // Session Meter: one quiet answer to "keep going in this chat, or start fresh?"
 // - Status line: how long the prompt cache stays warm, and how big the chat is.
-// - Cold-send guard: once per cold spell, asks before a big chat is re-read at full price.
 // - /handoff (or the band's button): writes a handoff brief and starts a fresh chat with it.
 import type { Register, EngineInterface, RenderInput, RenderElement } from 'claude-code'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
 const TICK = 20_000
-const GUARD_MIN_TOKENS = 20_000
 
 const HANDOFF_PROMPT = `Write a handoff brief so a brand-new session, with no access to this conversation, can continue the work exactly where it stands.
 
@@ -39,7 +37,6 @@ const s = {
   tokens: 0,
   window: 0,
   working: false,
-  guarded: false, // asked once this cold spell
   offerDismissedAt: 0, // context size when "Not now" was pressed
   handoff: null as Handoff | null,
   threshold: 250_000,
@@ -171,7 +168,6 @@ export const register: Register = (on, options) => {
     if (e.agentId) return r
     s.working = false
     s.lastEnd = await $.clock.now()
-    s.guarded = false
     await refreshUsage($)
     await paintStatus($)
     $.ui.invalidate('ui.render')
@@ -184,36 +180,6 @@ export const register: Register = (on, options) => {
     s.tokens = 0
     s.offerDismissedAt = 0
     $.ui.status(undefined)
-    return next(e)
-  })
-
-  // The guard: once per cold spell, before a big chat is re-read at full price.
-  on('prompt.submit', async ($, e, next) => {
-    const person = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
-    if (!person || e.isMeta) return next(e)
-    if (e.command || s.guarded || !s.lastEnd || s.tokens < GUARD_MIN_TOKENS) return next(e)
-    const now = await $.clock.now()
-    if (now < s.lastEnd + s.ttl) return next(e)
-    s.guarded = true
-    const ratio = s.ttl === HOUR ? '~20×' : '~12×'
-    let answer = ''
-    try {
-      answer = await $.ui.ask(
-        `The cache went cold ${dur(now - s.lastEnd - s.ttl)} ago. Sending now re-reads ${k(s.tokens)} tokens at full price (${ratio} a warm message). Send it?`,
-        { options: ['Send', 'Hand off instead', 'Cancel'], header: 'Cold cache' },
-      )
-    } catch {
-      return next(e) // dismissed or no one to ask: never hold a prompt hostage
-    }
-    if (answer === 'Hand off instead') {
-      void $.prompt.fill({ text: e.text, mode: 'replace' })
-      $.clock.after(0, () => void startHandoff($))
-      return { drop: 'Held: writing a handoff instead. Your message is back in the prompt box.' }
-    }
-    if (answer === 'Cancel') {
-      void $.prompt.fill({ text: e.text, mode: 'replace' })
-      return { drop: 'Not sent. Your message is back in the prompt box.' }
-    }
     return next(e)
   })
 
