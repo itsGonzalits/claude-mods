@@ -72,23 +72,3 @@ test('a cold cache holds the next message once and can cancel it', async ($, on)
   expect(asked.join(' ')).toMatch(/re-reads 120k tokens/)
   expect('drop' in cold).toBe(true)
 })
-
-test('/keepwarm pings before the cache would go cold, and stops when the person is back', async ($, on) => {
-  world(on, 80_000)
-  const clock = mock.clock(on, { now: 1_000_000 })
-  let pings = 0
-  on('model.fork', () => { pings += 1; return { value: { isAnswered: true, text: 'ok', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 0 } } } })
-  on('command.run', () => ({ text: '' }))
-  on('prompt.submit', (_, e) => ({ text: e.text }))
-  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  await $.turn.complete(done)
-  const r = await $.command.run({ command: 'keepwarm', args: '3h', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
-  expect(r.text).toMatch(/for 3h/)
-  for (let i = 0; i < 9 * 6; i++) await clock.advance(20_000) // 18 minutes past the hour mark
-  await clock.advance(60 * 60_000)
-  expect(pings).toBeGreaterThanOrEqual(1)
-  const before = pings
-  await $.prompt.submit({ text: 'back', wait: false, origin: { kind: 'composer' } })
-  for (let i = 0; i < 6 * 60; i++) await clock.advance(20_000)
-  expect(pings).toBe(before)
-})

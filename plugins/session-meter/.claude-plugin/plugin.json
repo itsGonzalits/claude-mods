@@ -1,7 +1,7 @@
 {
   "name": "session-meter",
-  "version": "1.1.0",
-  "description": "Cache countdown in the status line, a guard before a cold re-read of a big chat, /keepwarm, and /handoff to a fresh chat",
+  "version": "1.2.0",
+  "description": "Cache countdown in the status line, a guard before a cold re-read of a big chat, and /handoff to a fresh chat",
   "author": {
     "name": "Gonzalo"
   },

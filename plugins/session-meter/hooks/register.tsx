@@ -1,7 +1,6 @@
 // Session Meter: one quiet answer to "keep going in this chat, or start fresh?"
 // - Status line: how long the prompt cache stays warm, and how big the chat is.
 // - Cold-send guard: once per cold spell, asks before a big chat is re-read at full price.
-// - /keepwarm [90m|2h|off]: background pings keep the cache warm while you are away.
 // - /handoff (or the band's button): writes a handoff brief and starts a fresh chat with it.
 import type { Register, EngineInterface, RenderInput, RenderElement } from 'claude-code'
 
@@ -9,9 +8,6 @@ const MIN = 60_000
 const HOUR = 60 * MIN
 const TICK = 20_000
 const GUARD_MIN_TOKENS = 20_000
-const DEFAULT_WARM = 2 * HOUR
-const MAX_WARM = 8 * HOUR
-const PING = 'Keep-warm ping. Reply with the single word: ok'
 
 const HANDOFF_PROMPT = `Write a handoff brief so a brand-new session, with no access to this conversation, can continue the work exactly where it stands.
 
@@ -44,9 +40,6 @@ const s = {
   window: 0,
   working: false,
   guarded: false, // asked once this cold spell
-  warmUntil: 0,
-  pings: 0,
-  pinging: false,
   offerDismissedAt: 0, // context size when "Not now" was pressed
   handoff: null as Handoff | null,
   threshold: 250_000,
@@ -56,12 +49,6 @@ const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
 function dur(ms: number) {
   const m = Math.max(0, Math.round(ms / MIN))
   return m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`
-}
-function parseDuration(arg: string): number | null {
-  const m = /^(\d+(?:\.\d+)?)\s*(h|m|min)?$/i.exec(arg.trim())
-  if (!m) return null
-  const n = Number(m[1])
-  return Math.min(MAX_WARM, (m[2]?.toLowerCase() === 'h' ? n * HOUR : n * MIN))
 }
 
 let autoTtl = true
@@ -88,41 +75,7 @@ async function paintStatus($: EngineInterface) {
   if (!s.lastEnd) return $.ui.status(undefined)
   const left = s.lastEnd + s.ttl - (await $.clock.now())
   const cache = left > 0 ? `Cache warm · ${dur(left)} left` : 'Cache cold'
-  const warm = s.warmUntil ? ' · keeping warm' : ''
-  $.ui.status(`${cache}${warm} · ${k(s.tokens)} context`)
-}
-
-function stopWarm($: EngineInterface, note?: string) {
-  if (!s.warmUntil) return
-  s.warmUntil = 0
-  s.pings = 0
-  if (note) $.ui.toast(note)
-  $.ui.invalidate('ui.render')
-}
-
-async function tick($: EngineInterface) {
-  const now = await $.clock.now()
-  if (s.warmUntil && now >= s.warmUntil) stopWarm($, `Keep warm ended after ${s.pings} ping${s.pings === 1 ? '' : 's'}.`)
-  const lead = Math.min(3 * MIN, s.ttl / 5)
-  if (s.warmUntil && !s.working && !s.pinging && s.lastEnd && now >= s.lastEnd + s.ttl - lead) {
-    s.pinging = true
-    try {
-      // A fork re-sends the chat as the main thread last sent it, so the API reads it
-      // from cache and the cache's timer starts over. Nothing is added to the transcript.
-      const r = await $.model.fork({ prompt: PING })
-      if (r.isAnswered || r.reason === 'empty-reply') {
-        s.lastEnd = await $.clock.now()
-        s.pings += 1
-      } else {
-        stopWarm($, `Keep warm stopped: ${r.reason}.`)
-      }
-    } catch {
-      stopWarm($, 'Keep warm stopped: the ping failed.')
-    } finally {
-      s.pinging = false
-    }
-  }
-  await paintStatus($)
+  $.ui.status(`${cache} · ${k(s.tokens)} context`)
 }
 
 async function startHandoff($: EngineInterface) {
@@ -153,7 +106,6 @@ async function startFresh($: EngineInterface) {
   const ho = s.handoff
   if (ho?.phase !== 'ready') return
   s.handoff = null
-  stopWarm($)
   await $.command.run({ command: 'clear' })
   await $.prompt.fill({
     text: `Continue from the handoff brief below (saved at ${ho.path}). Start with "Next steps".\n\n${ho.text}`,
@@ -189,10 +141,6 @@ function band($: EngineInterface, e: RenderInput & { component: 'AbovePrompt' })
       }} />,
       <Button key="dismiss" role="dismiss" label="Dismiss" onPress={() => { s.handoff = null; $.ui.invalidate('ui.render') }} />,
     ])
-  if (s.warmUntil)
-    return row('●', 'claude', 'Keeping cache warm', `${s.pings} ping${s.pings === 1 ? '' : 's'} so far`, [
-      <Button key="stop" plain hotkey="s" label="Stop" onPress={() => stopWarm($, 'Keep warm stopped.')} />,
-    ])
   if (s.tokens >= s.threshold && s.tokens >= s.offerDismissedAt + 100_000)
     return row('●', 'warning', `Long chat · ${k(s.tokens)} context`, 'a fresh chat keeps answers sharp', [
       <Button key="handoff" variant="primary" hotkey="h" label="Hand off" onPress={() => startHandoff($)} />,
@@ -208,14 +156,13 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     s.ttl = await detectTtl($, ttlSetting)
-    await $.command.register({ name: 'keepwarm', description: 'Keep the prompt cache warm while you are away', argumentHint: '[90m | 2h | off]' })
     await $.command.register({ name: 'handoff', description: 'Write a handoff brief and start a fresh chat with it' })
-    $.clock.every(TICK, () => void tick($).catch(() => undefined))
+    $.clock.every(TICK, () => void paintStatus($).catch(() => undefined))
     return r
   })
 
   on('turn.start', ($, e, next) => {
-    if (!e.agentId && e.text !== PING) s.working = true
+    if (!e.agentId) s.working = true
     return next(e)
   })
 
@@ -244,7 +191,6 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     const person = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
     if (!person || e.isMeta) return next(e)
-    if (s.warmUntil) stopWarm($, 'Welcome back: keep warm stopped.')
     if (e.command || s.guarded || !s.lastEnd || s.tokens < GUARD_MIN_TOKENS) return next(e)
     const now = await $.clock.now()
     if (now < s.lastEnd + s.ttl) return next(e)
@@ -269,22 +215,6 @@ export const register: Register = (on, options) => {
       return { drop: 'Not sent. Your message is back in the prompt box.' }
     }
     return next(e)
-  })
-
-  on('command.run', { command: 'keepwarm' }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase()
-    if (arg === 'off' || arg === 'stop') {
-      stopWarm($)
-      return { text: 'Keep warm is off.' }
-    }
-    if (!s.lastEnd) return { text: 'Nothing to keep warm yet: send a first message.' }
-    const span = arg ? parseDuration(arg) : DEFAULT_WARM
-    if (!span) return { text: 'Usage: /keepwarm 90m, /keepwarm 2h or /keepwarm off' }
-    s.warmUntil = (await $.clock.now()) + span
-    s.pings = 0
-    $.ui.invalidate('ui.render')
-    await paintStatus($)
-    return { text: `Keeping the cache warm for ${dur(span)}, or until you send your next message. Each ping re-reads the chat from cache (about a tenth of a normal send).` }
   })
 
   on('command.run', { command: 'handoff' }, async $ => {
