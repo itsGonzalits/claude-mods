@@ -1,22 +1,11 @@
 {
   "name": "session-meter",
-  "version": "1.3.0",
-  "description": "Cache countdown in the status line, and /handoff to a fresh chat when the chat gets long",
+  "version": "1.4.0",
+  "description": "Chat size in the status line, and a handoff to a fresh chat when the chat gets long",
   "author": {
     "name": "Gonzalo"
   },
   "userConfig": {
-    "cache_ttl": {
-      "type": "string",
-      "title": "Cache lifetime",
-      "description": "auto: 1 hour on a Claude subscription, 5 minutes on an API key",
-      "options": [
-        "auto",
-        "1h",
-        "5m"
-      ],
-      "default": "auto"
-    },
     "handoff_at": {
       "type": "number",
       "title": "Offer a handoff at (tokens)",

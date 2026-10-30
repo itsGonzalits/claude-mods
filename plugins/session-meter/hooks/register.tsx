@@ -1,11 +1,8 @@
 // Session Meter: one quiet answer to "keep going in this chat, or start fresh?"
-// - Status line: how long the prompt cache stays warm, and how big the chat is.
-// - /handoff (or the band's button): writes a handoff brief and starts a fresh chat with it.
+// - Status line: how big the chat is.
+// - When the chat gets long, the band offers a handoff; /handoff does it any time.
+//   It writes a handoff brief and starts a fresh chat with it.
 import type { Register, EngineInterface, RenderInput, RenderElement } from 'claude-code'
-
-const MIN = 60_000
-const HOUR = 60 * MIN
-const TICK = 20_000
 
 const HANDOFF_PROMPT = `Write a handoff brief so a brand-new session, with no access to this conversation, can continue the work exactly where it stands.
 
@@ -32,10 +29,7 @@ type Handoff =
   | { phase: 'failed'; reason: string }
 
 const s = {
-  ttl: HOUR,
-  lastEnd: 0, // when the main thread last wrote the cache
   tokens: 0,
-  window: 0,
   working: false,
   offerDismissedAt: 0, // context size when "Not now" was pressed
   handoff: null as Handoff | null,
@@ -43,36 +37,16 @@ const s = {
 }
 
 const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
-function dur(ms: number) {
-  const m = Math.max(0, Math.round(ms / MIN))
-  return m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`
-}
-
-let autoTtl = true
 
 async function refreshUsage($: EngineInterface) {
   try {
     const u = await $.session.usage()
     s.tokens = u.context.tokens ?? s.tokens
-    s.window = u.context.window
-    // Subscriptions write a 1-hour cache and report rate-limit windows; API keys and
-    // cloud providers write 5 minutes and report none. Until the first turn has
-    // reported anything, assume the subscription.
-    if (autoTtl && (u.rateLimits.length || s.lastEnd)) s.ttl = u.rateLimits.length ? HOUR : 5 * MIN
-  } catch { /* keep the last numbers */ }
+  } catch { /* keep the last number */ }
 }
 
-async function detectTtl($: EngineInterface, setting: string) {
-  autoTtl = setting !== '1h' && setting !== '5m'
-  if (setting === '5m') return 5 * MIN
-  return HOUR
-}
-
-async function paintStatus($: EngineInterface) {
-  if (!s.lastEnd) return $.ui.status(undefined)
-  const left = s.lastEnd + s.ttl - (await $.clock.now())
-  const cache = left > 0 ? `Cache warm · ${dur(left)} left` : 'Cache cold'
-  $.ui.status(`${cache} · ${k(s.tokens)} context`)
+function paintStatus($: EngineInterface) {
+  $.ui.status(s.tokens ? `${k(s.tokens)} context` : undefined)
 }
 
 async function startHandoff($: EngineInterface) {
@@ -147,14 +121,11 @@ function band($: EngineInterface, e: RenderInput & { component: 'AbovePrompt' })
 }
 
 export const register: Register = (on, options) => {
-  const ttlSetting = String(options?.cache_ttl ?? 'auto')
   s.threshold = Number(options?.handoff_at ?? 250_000) || 250_000
 
   on('session.start', async ($, e, next) => {
     const r = await next(e)
-    s.ttl = await detectTtl($, ttlSetting)
     await $.command.register({ name: 'handoff', description: 'Write a handoff brief and start a fresh chat with it' })
-    $.clock.every(TICK, () => void paintStatus($).catch(() => undefined))
     return r
   })
 
@@ -167,16 +138,14 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if (e.agentId) return r
     s.working = false
-    s.lastEnd = await $.clock.now()
     await refreshUsage($)
-    await paintStatus($)
+    paintStatus($)
     $.ui.invalidate('ui.render')
     return r
   })
 
   on('session.end', ($, e, next) => {
-    // A /clear starts the chat over: nothing is cached any more.
-    s.lastEnd = 0
+    // A /clear starts the chat over.
     s.tokens = 0
     s.offerDismissedAt = 0
     $.ui.status(undefined)
